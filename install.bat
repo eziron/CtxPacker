@@ -12,7 +12,7 @@ if not exist "%~dp0%SCRIPT_NAME%" (
 )
 
 echo Instalando dependencias...
-pip install pathspec
+python -m pip install pathspec
 
 echo.
 echo Instalando %CMD_NAME% para Windows...
@@ -34,7 +34,7 @@ if "%CURRENT_DIR:~-1%"=="\" set "CURRENT_DIR=%CURRENT_DIR:~0,-1%"
 powershell -Command ^
     "$path = [Environment]::GetEnvironmentVariable('Path', 'User'); " ^
     "$folder = '%CURRENT_DIR%'; " ^
-    "if ($path -notlike * $folder *) { " ^
+    "if ($path -notlike ('*' + $folder + '*')) { " ^
     "    [Environment]::SetEnvironmentVariable('Path', $path + ';' + $folder, 'User'); " ^
     "    Write-Host '   [OK] Ruta agregada al PATH.'; " ^
     "} else { " ^

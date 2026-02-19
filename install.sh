@@ -15,7 +15,7 @@ if [ ! -f "$SCRIPT_PATH" ]; then
 fi
 
 echo "Instalando dependencias (pathspec)..."
-pip3 install pathspec --break-system-packages 2>/dev/null || pip install pathspec
+python3 -m pip install pathspec --break-system-packages 2>/dev/null || python3 -m pip install pathspec
 
 echo "Instalando comando global: $CMD_NAME..."
 

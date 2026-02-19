@@ -23,7 +23,7 @@ Para poder usar el comando `ctxpack` desde cualquier terminal, descarga o clona 
 
 ### Windows
 1. Haz doble clic en el archivo `install.bat`.
-2. Cierra la terminal actual y abre una nueva.
+2. Cierra la terminal y reinicie la computadora.
 
 ### Linux / Mac
 1. Abre una terminal en la carpeta del repositorio.
