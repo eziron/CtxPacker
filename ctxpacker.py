@@ -2,7 +2,7 @@
 import os
 import argparse
 import time
-from typing import List, Set, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 try:
     import pathspec
@@ -130,10 +130,64 @@ def is_in_header_path(file_rel_path: str, header_paths: Set[str]) -> bool:
     return False
 
 
+def should_include_file_in_summary(
+    file_path: str,
+    relative_path: str,
+    filename: str,
+    output_filepath: str,
+    exclude_files: Set[str],
+    exclude_extensions: Set[str],
+    spec: Optional[pathspec.PathSpec],
+    max_file_size: Optional[int],
+    header_only_paths: Set[str],
+    header_extensions: Set[str],
+) -> bool:
+    """Aplica la misma lógica de filtros usada para incluir archivos en el .md."""
+    if os.path.abspath(file_path) == output_filepath:
+        return False
+    if filename in exclude_files:
+        return False
+
+    _, extension = os.path.splitext(filename)
+    if extension.lower() in exclude_extensions:
+        return False
+
+    if spec and spec.match_file(relative_path):
+        return False
+
+    if max_file_size and os.path.getsize(file_path) > max_file_size:
+        return False
+
+    if header_only_paths and is_in_header_path(relative_path, header_only_paths):
+        if not is_header_file(filename, header_extensions):
+            return False
+
+    return True
+
+
+def calculate_file_stats(file_path: str) -> Optional[Tuple[int, int]]:
+    """Retorna (size_bytes, line_count) o None si no se puede leer."""
+    try:
+        file_size = os.path.getsize(file_path)
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            line_count = sum(1 for _ in f)
+        return file_size, line_count
+    except Exception:
+        return None
+
+
 # --- GENERACIÓN DEL ÁRBOL ---
 
 
-def generate_tree(start_path: str, project_root: str, exclude_dirs: Set[str], spec: Optional[pathspec.PathSpec], add_hidden: bool, prefix: str = "") -> List[str]:
+def generate_tree(
+    start_path: str,
+    project_root: str,
+    exclude_dirs: Set[str],
+    spec: Optional[pathspec.PathSpec],
+    add_hidden: bool,
+    file_metadata_by_relpath: Optional[Dict[str, str]] = None,
+    prefix: str = "",
+) -> List[str]:
     tree_lines = []
     try:
         entries = sorted(os.scandir(start_path), key=lambda e: e.name)
@@ -153,7 +207,14 @@ def generate_tree(start_path: str, project_root: str, exclude_dirs: Set[str], sp
 
     for i, entry in enumerate(sorted_entries):
         connector = "└── " if i == len(sorted_entries) - 1 else "├── "
-        tree_lines.append(f"{prefix}{connector}{entry.name}")
+        entry_display_name = entry.name
+        if entry.is_file() and file_metadata_by_relpath:
+            relative_path = os.path.relpath(entry.path, project_root).replace(os.sep, "/")
+            metadata = file_metadata_by_relpath.get(relative_path)
+            if metadata:
+                entry_display_name = f"{entry.name}{metadata}"
+
+        tree_lines.append(f"{prefix}{connector}{entry_display_name}")
 
         if entry.is_dir():
             relative_path = os.path.relpath(entry.path, project_root).replace(os.sep, "/")
@@ -164,7 +225,7 @@ def generate_tree(start_path: str, project_root: str, exclude_dirs: Set[str], sp
                 tree_lines.append(f"{prefix}│   └── [...]")
             else:
                 extension = "    " if i == len(sorted_entries) - 1 else "│   "
-                tree_lines.extend(generate_tree(entry.path, project_root, exclude_dirs, spec, add_hidden, prefix + extension))
+                tree_lines.extend(generate_tree(entry.path, project_root, exclude_dirs, spec, add_hidden, file_metadata_by_relpath, prefix + extension))
     return tree_lines
 
 
@@ -194,6 +255,8 @@ def generate_project_summary(
     files_included = 0
     files_omitted_header_logic = 0
     total_lines_added = 0
+    included_text_file_stats: Dict[str, Tuple[int, int]] = {}
+    tree_metadata_by_relpath: Dict[str, str] = {}
 
     # Configuración Gitignore
     spec = None
@@ -210,6 +273,51 @@ def generate_project_summary(
     if header_only_paths:
         print(f"Modo 'Solo Cabeceras' activo para rutas: {', '.join(header_only_paths)}")
 
+    # Pre-cálculo opcional para enriquecer el árbol solo con archivos que entrarán al .md
+    if add_tree and include_metadata:
+        for root, dirs, files in os.walk(project_path, topdown=True):
+            relative_root = os.path.relpath(root, project_path)
+            if relative_root == ".":
+                relative_root = ""
+
+            if not add_hidden:
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+
+            original_dirs = dirs[:]
+            dirs[:] = [d for d in original_dirs if d not in exclude_dirs and not (spec and spec.match_file(os.path.join(relative_root, d).replace(os.sep, "/")))]
+
+            for filename in files:
+                if not add_hidden and filename.startswith("."):
+                    continue
+
+                file_path = os.path.join(root, filename)
+                relative_path = os.path.relpath(file_path, project_path).replace(os.sep, "/")
+
+                if not should_include_file_in_summary(
+                    file_path=file_path,
+                    relative_path=relative_path,
+                    filename=filename,
+                    output_filepath=output_filepath,
+                    exclude_files=exclude_files,
+                    exclude_extensions=exclude_extensions,
+                    spec=spec,
+                    max_file_size=max_file_size,
+                    header_only_paths=header_only_paths,
+                    header_extensions=header_extensions,
+                ):
+                    continue
+
+                if not is_text_file(file_path):
+                    continue
+
+                stats = calculate_file_stats(file_path)
+                if not stats:
+                    continue
+
+                included_text_file_stats[relative_path] = stats
+                file_size, line_count = stats
+                tree_metadata_by_relpath[relative_path] = f" | Size: {format_bytes(file_size)} | Lines: {line_count}"
+
     try:
         with open(output_filepath, "w", encoding="utf-8", errors="ignore") as md_file:
             md_file.write(f"# Resumen del Proyecto: {os.path.basename(project_path)}\n\n")
@@ -219,7 +327,14 @@ def generate_project_summary(
                 print("Generando árbol de directorios...")
                 md_file.write("## Estructura del Proyecto\n\n")
                 md_file.write("```\n")
-                tree_lines = generate_tree(project_path, project_path, exclude_dirs, spec, add_hidden)
+                tree_lines = generate_tree(
+                    project_path,
+                    project_path,
+                    exclude_dirs,
+                    spec,
+                    add_hidden,
+                    tree_metadata_by_relpath if include_metadata else None,
+                )
                 for line in tree_lines:
                     md_file.write(f"{line}\n")
                 md_file.write("```\n\n---\n\n")
@@ -247,39 +362,36 @@ def generate_project_summary(
                     file_path = os.path.join(root, filename)
                     relative_path = os.path.relpath(file_path, project_path).replace(os.sep, "/")
 
-                    # Filtro 2: Archivo de salida y Exclusiones Manuales
-                    if os.path.abspath(file_path) == output_filepath:
-                        continue
-                    if filename in exclude_files:
+                    # Filtro 2: Archivo de salida + exclusiones + gitignore + tamaño + solo headers
+                    if not should_include_file_in_summary(
+                        file_path=file_path,
+                        relative_path=relative_path,
+                        filename=filename,
+                        output_filepath=output_filepath,
+                        exclude_files=exclude_files,
+                        exclude_extensions=exclude_extensions,
+                        spec=spec,
+                        max_file_size=max_file_size,
+                        header_only_paths=header_only_paths,
+                        header_extensions=header_extensions,
+                    ):
+                        if header_only_paths and is_in_header_path(relative_path, header_only_paths) and not is_header_file(filename, header_extensions):
+                            files_omitted_header_logic += 1
                         continue
 
                     _, extension = os.path.splitext(filename)
-                    if extension.lower() in exclude_extensions:
-                        continue
-
-                    # Filtro 3: Gitignore
-                    if spec and spec.match_file(relative_path):
-                        continue
-
-                    # Filtro 4: Tamaño
-                    if max_file_size and os.path.getsize(file_path) > max_file_size:
-                        continue
-
-                    # Solo Cabeceras (Header Only)
-                    if header_only_paths and is_in_header_path(relative_path, header_only_paths):
-                        if not is_header_file(filename, header_extensions):
-                            files_omitted_header_logic += 1
-                            continue
 
                     # Procesamiento del contenido
                     if is_text_file(file_path):
                         try:
                             metadata_str = ""
                             if include_metadata:
-                                file_size = os.path.getsize(file_path)
-                                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                                    line_count = sum(1 for _ in f)
-                                metadata_str = f"\nSize: {format_bytes(file_size)} | Lines: {line_count}"
+                                stats = included_text_file_stats.get(relative_path)
+                                if not stats:
+                                    stats = calculate_file_stats(file_path)
+                                if stats:
+                                    file_size, line_count = stats
+                                    metadata_str = f"\nSize: {format_bytes(file_size)} | Lines: {line_count}"
 
                             md_file.write(f"```plaintext\n{relative_path}{metadata_str}\n```\n\n")
 
